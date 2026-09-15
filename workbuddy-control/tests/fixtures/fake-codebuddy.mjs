@@ -1,6 +1,11 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'node:http'
 
+if (process.argv.includes('--version')) {
+  process.stdout.write('2.137.1\n')
+  process.exit(0)
+}
+
 const child = process.env.FAKE_RUNNING_CHILD === '1'
   ? spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
   : undefined

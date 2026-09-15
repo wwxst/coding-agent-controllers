@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run && pnpm run test:portable",
+    "test:portable": "pwsh -NoProfile -Command \"Import-Module Pester; Invoke-Pester -Script './tests/portable-setup.Tests.ps1' -EnableExit\""
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
