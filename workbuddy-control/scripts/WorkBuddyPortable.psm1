@@ -2,19 +2,126 @@ Set-StrictMode -Version Latest
 
 $script:ExpectedTools = @(
     'workbuddy_cancel'
+    'workbuddy_cancel_desktop'
     'workbuddy_result'
+    'workbuddy_result_desktop'
     'workbuddy_resume'
+    'workbuddy_resume_desktop'
     'workbuddy_run'
+    'workbuddy_run_desktop'
     'workbuddy_status'
+    'workbuddy_status_desktop'
 )
 $script:LauncherFileName = 'workbuddy-codebuddy.exe'
 $script:LauncherMarkerFileName = 'workbuddy-codebuddy.sha256'
+$script:DesktopExtensionMarkerFileName = '.workbuddy-control-owned'
+$script:DesktopExtensionMarkerValue = 'workbuddy-control-desktop-v1'
 
 function Get-DefaultCodexHome {
     if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
         return [IO.Path]::GetFullPath($env:CODEX_HOME)
     }
     return Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex'
+}
+
+function Get-DefaultDesktopExtensionRoot {
+    return Join-Path ([Environment]::GetFolderPath('UserProfile')) `
+        '.workbuddy\extensions\workbuddy-control-desktop'
+}
+
+function Install-WorkBuddyDesktopExtension {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$PluginRoot,
+        [Parameter(Mandatory)][string]$CodeBuddyPath,
+        [string]$DesktopExtensionRoot = (Get-DefaultDesktopExtensionRoot)
+    )
+
+    $version = Get-WorkBuddyVersion (Get-WorkBuddyInstallRoot $CodeBuddyPath)
+    if ($version -ne '5.5.2') {
+        throw "Desktop Mode POC only supports WorkBuddy Desktop 5.5.2; found $version."
+    }
+    $sourceRoot = Join-Path ([IO.Path]::GetFullPath($PluginRoot)) 'desktop-extension'
+    $targetRoot = [IO.Path]::GetFullPath($DesktopExtensionRoot)
+    $markerPath = Join-Path $targetRoot $script:DesktopExtensionMarkerFileName
+    if ((Test-Path -LiteralPath $targetRoot) -and -not (Test-OwnedWorkBuddyDesktopExtension $targetRoot)) {
+        throw "Desktop Extension directory exists but is not owned by workbuddy-control: $targetRoot"
+    }
+    foreach ($relativePath in 'extension.json', 'distribution.json', 'server\index.cjs', 'server\pipe-security.ps1', 'server\pipe-server.ps1') {
+        $sourcePath = Join-Path $sourceRoot $relativePath
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "Desktop Extension source file is missing: $sourcePath"
+        }
+        $targetPath = Join-Path $targetRoot $relativePath
+        New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force | Out-Null
+        Copy-Item -LiteralPath $sourcePath -Destination $targetPath -Force
+    }
+    [IO.File]::WriteAllText($markerPath, $script:DesktopExtensionMarkerValue, [Text.UTF8Encoding]::new($false))
+    return $targetRoot
+}
+
+function Test-OwnedWorkBuddyDesktopExtension([string]$DesktopExtensionRoot) {
+    $markerPath = Join-Path ([IO.Path]::GetFullPath($DesktopExtensionRoot)) $script:DesktopExtensionMarkerFileName
+    if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return $false }
+    return ([IO.File]::ReadAllText($markerPath)).Trim() -eq $script:DesktopExtensionMarkerValue
+}
+
+function Remove-WorkBuddyDesktopExtension {
+    [CmdletBinding()]
+    param([string]$DesktopExtensionRoot = (Get-DefaultDesktopExtensionRoot))
+
+    $targetRoot = [IO.Path]::GetFullPath($DesktopExtensionRoot)
+    if (-not (Test-OwnedWorkBuddyDesktopExtension $targetRoot)) { return }
+    Remove-Item -LiteralPath $targetRoot -Recurse -Force
+}
+
+function Get-WorkBuddyDesktopPipeName {
+    $profile = ([Environment]::GetFolderPath('UserProfile')).ToLowerInvariant()
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($profile))
+    } finally {
+        $sha.Dispose()
+    }
+    $hash = ([BitConverter]::ToString($bytes)).Replace('-', '').ToLowerInvariant().Substring(0, 16)
+    return "workbuddy-control-desktop-v1-$hash"
+}
+
+function Invoke-WorkBuddyDesktopPipePing {
+    $pipe = [IO.Pipes.NamedPipeClientStream]::new(
+        '.',
+        (Get-WorkBuddyDesktopPipeName),
+        [IO.Pipes.PipeDirection]::InOut,
+        [IO.Pipes.PipeOptions]::None
+    )
+    try {
+        $pipe.Connect(1000)
+        $writer = [IO.StreamWriter]::new($pipe, [Text.UTF8Encoding]::new($false), 1024, $true)
+        $reader = [IO.StreamReader]::new($pipe, [Text.UTF8Encoding]::new($false), $false, 1024, $true)
+        try {
+            $request = [ordered]@{
+                id = [Guid]::NewGuid().ToString()
+                method = 'ping'
+                params = @{}
+            } | ConvertTo-Json -Compress
+            $writer.WriteLine($request)
+            $writer.Flush()
+            $readTask = $reader.ReadLineAsync()
+            if (-not $readTask.Wait(3000)) {
+                throw 'WorkBuddy Desktop Extension pipe ping timed out.'
+            }
+            $response = $readTask.Result | ConvertFrom-Json -ErrorAction Stop
+            if (-not $response.ok) {
+                throw "WorkBuddy Desktop Extension pipe ping failed: $($response.error.message)"
+            }
+            return $response.result
+        } finally {
+            $reader.Dispose()
+            $writer.Dispose()
+        }
+    } finally {
+        $pipe.Dispose()
+    }
 }
 
 function ConvertTo-TomlString([string]$Value) {
@@ -390,7 +497,9 @@ function Get-WorkBuddyVersion([string]$InstallRoot) {
         $version = (Get-Item -LiteralPath $executable).VersionInfo.FileVersion
     }
     if ([string]::IsNullOrWhiteSpace($version)) { return 'unknown' }
-    return ($version -split '[+ ]')[0]
+    $normalized = ($version -split '[+ ]')[0]
+    if ($normalized -match '^(\d+\.\d+\.\d+)(?:\.\d+)?$') { return $Matches[1] }
+    return $normalized
 }
 
 function Get-WorkBuddyEnvironment {
@@ -602,7 +711,8 @@ function Get-WorkBuddyDoctorReport {
         [Parameter(Mandatory)][string]$PluginRoot,
         [string]$CodexHome = (Get-DefaultCodexHome),
         [string]$CodeBuddyPath,
-        [string]$WorkBuddyConfigDir
+        [string]$WorkBuddyConfigDir,
+        [string]$DesktopExtensionRoot = (Get-DefaultDesktopExtensionRoot)
     )
 
     $root = [IO.Path]::GetFullPath($PluginRoot)
@@ -613,6 +723,7 @@ function Get-WorkBuddyDoctorReport {
     $buildOutput = Test-Path -LiteralPath $serverPath -PathType Leaf
     $issues = [Collections.Generic.List[string]]::new()
     $recommendations = [Collections.Generic.List[string]]::new()
+    $warnings = [Collections.Generic.List[string]]::new()
     try { $nodePath = Get-NodeExecutable } catch { $nodePath = $null; $issues.Add($_.Exception.Message) }
     $sdkResolvable = $false
     if ($null -ne $nodePath) { $sdkResolvable = Test-SdkResolvable $nodePath $root }
@@ -620,9 +731,35 @@ function Get-WorkBuddyDoctorReport {
     if (-not $buildOutput) { $issues.Add('lib/server.js is missing.') }
     if (-not $sdkResolvable) { $issues.Add('@modelcontextprotocol/sdk is not resolvable.') }
 
+    $resolvedExtensionRoot = [IO.Path]::GetFullPath($DesktopExtensionRoot)
+    $desktopExtensionConfigured = Test-Path -LiteralPath $resolvedExtensionRoot -PathType Container
+    $desktopExtension = (Test-OwnedWorkBuddyDesktopExtension $resolvedExtensionRoot) -and
+        (Test-Path -LiteralPath (Join-Path $resolvedExtensionRoot 'extension.json') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $resolvedExtensionRoot 'distribution.json') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $resolvedExtensionRoot 'server\index.cjs') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $resolvedExtensionRoot 'server\pipe-security.ps1') -PathType Leaf) -and
+        (Test-Path -LiteralPath (Join-Path $resolvedExtensionRoot 'server\pipe-server.ps1') -PathType Leaf)
+    if ($desktopExtensionConfigured -and -not $desktopExtension) {
+        $issues.Add("The owned WorkBuddy Desktop Extension is missing: $resolvedExtensionRoot")
+    }
+    $desktopPipe = $false
+    $desktopExtensionVersion = $null
+    if ($desktopExtension) {
+        try {
+            $ping = Invoke-WorkBuddyDesktopPipePing
+            $desktopPipe = $true
+            $desktopExtensionVersion = $ping.extensionVersion
+        } catch {
+            $issues.Add("WorkBuddy Desktop Extension is unavailable: $($_.Exception.Message)")
+        }
+    }
+
     $mcp = Get-TomlSectionData $configPath 'mcp_servers.workbuddy'
     $mcpEnvironment = Get-TomlSectionData $configPath 'mcp_servers.workbuddy.env'
-    $configuredArgs = @($mcp.args)
+    $mcpCommand = if ($mcp.Contains('command')) { $mcp.command } else { $null }
+    $configuredArgs = @()
+    if ($mcp.Contains('args')) { $configuredArgs = @($mcp.args) }
+    $mcpCwd = if ($mcp.Contains('cwd')) { $mcp.cwd } else { $null }
     $mcpEnabled = $mcp.Count -gt 0 -and (-not $mcp.Contains('enabled') -or [bool]$mcp.enabled)
     if ($mcp.Count -eq 0) {
         $issues.Add('The workbuddy MCP configuration is missing.')
@@ -647,6 +784,15 @@ function Get-WorkBuddyDoctorReport {
         $resolvedCodeBuddy = $null
         $issues.Add($_.Exception.Message)
     }
+    $workBuddyVersion = if ($null -ne $resolvedCodeBuddy) {
+        Get-WorkBuddyVersion (Get-WorkBuddyInstallRoot $resolvedCodeBuddy)
+    } else {
+        'unknown'
+    }
+    $workBuddyVersionVerified = $workBuddyVersion -eq '5.5.2'
+    if ($desktopExtensionConfigured -and -not $workBuddyVersionVerified) {
+        $issues.Add("Desktop Mode POC only supports WorkBuddy Desktop 5.5.2; found $workBuddyVersion.")
+    }
     if ([string]::IsNullOrWhiteSpace($WorkBuddyConfigDir)) {
         $WorkBuddyConfigDir = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.workbuddy-ai'
     }
@@ -658,18 +804,26 @@ function Get-WorkBuddyDoctorReport {
     $initialize = $false
     $toolsList = $false
     $toolNames = @()
+    $desktopTools = $false
     if ($null -ne $nodePath -and $sdkResolvable -and $buildOutput -and $mcpEnabled -and $mcpEnvironment.Count -gt 0) {
         try {
-            $commandPath = if ([IO.Path]::IsPathRooted([string]$mcp.command)) {
-                [string]$mcp.command
+            $commandPath = if ([IO.Path]::IsPathRooted([string]$mcpCommand)) {
+                [string]$mcpCommand
             } else {
-                (Get-Command ([string]$mcp.command) -ErrorAction Stop).Source
+                (Get-Command ([string]$mcpCommand) -ErrorAction Stop).Source
             }
             $smoke = Invoke-McpSmokeTest -NodePath $commandPath -ServerPath ([string]$configuredArgs[0]) `
-                -WorkingDirectory ([string]$mcp.cwd) -Environment $mcpEnvironment
+                -WorkingDirectory ([string]$mcpCwd) -Environment $mcpEnvironment
             $initialize = $smoke.Initialize
             $toolsList = $smoke.ToolsList
             $toolNames = $smoke.ToolNames
+            $desktopTools = @(
+                'workbuddy_run_desktop',
+                'workbuddy_status_desktop',
+                'workbuddy_result_desktop',
+                'workbuddy_cancel_desktop',
+                'workbuddy_resume_desktop'
+            ).Where({ $toolNames -contains $_ }).Count -eq 5
         } catch {
             $issues.Add("MCP smoke test failed: $($_.Exception.Message)")
         }
@@ -683,19 +837,28 @@ function Get-WorkBuddyDoctorReport {
         NodeModules = $nodeModules
         BuildOutput = $buildOutput
         SdkResolvable = $sdkResolvable
+        DesktopExtensionRoot = $resolvedExtensionRoot
+        DesktopExtensionConfigured = $desktopExtensionConfigured
+        DesktopExtension = $desktopExtension
+        DesktopExtensionVersion = $desktopExtensionVersion
+        DesktopPipe = $desktopPipe
         CodeBuddyPath = $resolvedCodeBuddy
         CodeBuddyVersion = if ($null -ne $nodePath -and $null -ne $resolvedCodeBuddy) { Get-CodeBuddyVersion $nodePath $resolvedCodeBuddy } else { $null }
+        WorkBuddyVersion = $workBuddyVersion
+        WorkBuddyVersionVerified = $workBuddyVersionVerified
         WorkBuddyConfigDir = $resolvedWorkBuddyConfig
         CodexConfigPath = $configPath
-        McpCommand = $mcp.command
+        McpCommand = $mcpCommand
         McpArgs = $configuredArgs
-        McpCwd = $mcp.cwd
+        McpCwd = $mcpCwd
         McpEnvironment = $mcpEnvironment
         Initialize = $initialize
         ToolsList = $toolsList
         ToolNames = $toolNames
+        DesktopTools = $desktopTools
         Issues = @($issues)
         Recommendations = @($recommendations)
+        Warnings = @($warnings)
     }
 }
 
@@ -705,7 +868,9 @@ function Invoke-WorkBuddySetup {
         [Parameter(Mandatory)][string]$PluginRoot,
         [string]$CodexHome = (Get-DefaultCodexHome),
         [string]$CodeBuddyPath,
-        [string]$WorkBuddyConfigDir
+        [string]$WorkBuddyConfigDir,
+        [string]$DesktopExtensionRoot = (Get-DefaultDesktopExtensionRoot),
+        [switch]$EnableDesktopMode
     )
 
     $root = [IO.Path]::GetFullPath($PluginRoot)
@@ -729,6 +894,13 @@ function Invoke-WorkBuddySetup {
 
     $resolvedCodeBuddy = Find-CodeBuddy -ExplicitPath $CodeBuddyPath
     Write-Output "codebuddy: PASS ($resolvedCodeBuddy)"
+    if ($EnableDesktopMode) {
+        $installedExtension = Install-WorkBuddyDesktopExtension -PluginRoot $root `
+            -CodeBuddyPath $resolvedCodeBuddy -DesktopExtensionRoot $DesktopExtensionRoot
+        Write-Output "Desktop Extension: PASS ($installedExtension)"
+    } else {
+        Write-Output 'Desktop Extension: SKIP (use -EnableDesktopMode for the optional Desktop Mode POC)'
+    }
     if ([string]::IsNullOrWhiteSpace($WorkBuddyConfigDir)) {
         $WorkBuddyConfigDir = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.workbuddy-ai'
     }
@@ -759,11 +931,14 @@ function Invoke-WorkBuddySetup {
 Export-ModuleMember -Function @(
     'Find-CodeBuddy',
     'Get-DefaultCodexHome',
+    'Get-DefaultDesktopExtensionRoot',
     'Get-WorkBuddyDoctorReport',
     'Get-WorkBuddyEnvironment',
+    'Install-WorkBuddyDesktopExtension',
     'Invoke-McpSmokeTest',
     'Invoke-WorkBuddySetup',
     'New-WorkBuddyLauncher',
+    'Remove-WorkBuddyDesktopExtension',
     'Remove-WorkBuddyLauncher',
     'Remove-WorkBuddyMcpConfig',
     'Set-WorkBuddyMcpConfig'

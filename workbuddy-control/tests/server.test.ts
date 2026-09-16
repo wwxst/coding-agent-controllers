@@ -40,12 +40,36 @@ function control(): WorkBuddyControlApi {
     result: vi.fn(async () => ({ ready: false as const, jobId: 'job-1', state: 'working' as const, settled: false })),
     cancel: vi.fn(async () => ({ jobId: 'job-1', stopped: true })),
     resume: vi.fn(async () => ({ jobId: 'job-1', sessionId: 'session-1', delivered: true })),
+    runDesktop: vi.fn(async () => ({ taskId: 'session-desktop-1', sessionId: 'session-desktop-1' })),
+    statusDesktop: vi.fn(async () => ({
+      taskId: 'session-desktop-1',
+      sessionId: 'session-desktop-1',
+      status: 'working' as const,
+      settled: false,
+    })),
+    resultDesktop: vi.fn(async () => ({
+      ready: false,
+      taskId: 'session-desktop-1',
+      sessionId: 'session-desktop-1',
+      status: 'working' as const,
+      settled: false,
+    })),
+    cancelDesktop: vi.fn(async () => ({
+      taskId: 'session-desktop-1',
+      sessionId: 'session-desktop-1',
+      cancelRequested: true as const,
+    })),
+    resumeDesktop: vi.fn(async () => ({
+      taskId: 'session-desktop-1',
+      sessionId: 'session-desktop-1',
+      delivered: true as const,
+    })),
     close: vi.fn(async () => undefined),
   }
 }
 
 describe('workbuddy-control MCP server', () => {
-  it('exposes exactly five prefixed tools and forwards their real arguments', async () => {
+  it('exposes the five Jobs tools and five Desktop tools and forwards their real arguments', async () => {
     const api = control()
     const server = createWorkBuddyMcpServer(api)
     const client = new Client({ name: 'test-client', version: '1.0.0' })
@@ -56,18 +80,48 @@ describe('workbuddy-control MCP server', () => {
 
     expect((await client.listTools()).tools.map(tool => tool.name)).toEqual([
       'workbuddy_run', 'workbuddy_status', 'workbuddy_result', 'workbuddy_cancel', 'workbuddy_resume',
+      'workbuddy_run_desktop', 'workbuddy_status_desktop', 'workbuddy_result_desktop',
+      'workbuddy_cancel_desktop', 'workbuddy_resume_desktop',
     ])
     await client.callTool({ name: 'workbuddy_run', arguments: { cwd: 'E:/safe', prompt: 'implement' } })
     await client.callTool({ name: 'workbuddy_status', arguments: { jobId: 'job-1' } })
     await client.callTool({ name: 'workbuddy_result', arguments: { jobId: 'job-1' } })
     await client.callTool({ name: 'workbuddy_cancel', arguments: { jobId: 'job-1' } })
     await client.callTool({ name: 'workbuddy_resume', arguments: { jobId: 'job-1', prompt: 'continue' } })
+    await client.callTool({
+      name: 'workbuddy_run_desktop',
+      arguments: {
+        cwd: 'E:/desktop-safe',
+        prompt: 'implement in Desktop',
+        model: 'deepseek-v4.1-flash',
+        mode: 'craft',
+        permissionMode: 'acceptEdits',
+      },
+    })
+    await client.callTool({ name: 'workbuddy_status_desktop', arguments: { taskId: 'session-desktop-1' } })
+    await client.callTool({ name: 'workbuddy_result_desktop', arguments: { taskId: 'session-desktop-1' } })
+    await client.callTool({ name: 'workbuddy_cancel_desktop', arguments: { taskId: 'session-desktop-1' } })
+    await client.callTool({
+      name: 'workbuddy_resume_desktop',
+      arguments: { taskId: 'session-desktop-1', prompt: 'continue in Desktop' },
+    })
 
     expect(api.run).toHaveBeenCalledWith('E:/safe', 'implement')
     expect(api.status).toHaveBeenCalledWith('job-1')
     expect(api.result).toHaveBeenCalledWith('job-1')
     expect(api.cancel).toHaveBeenCalledWith('job-1')
     expect(api.resume).toHaveBeenCalledWith('job-1', 'continue')
+    expect(api.runDesktop).toHaveBeenCalledWith({
+      cwd: 'E:/desktop-safe',
+      prompt: 'implement in Desktop',
+      model: 'deepseek-v4.1-flash',
+      mode: 'craft',
+      permissionMode: 'acceptEdits',
+    })
+    expect(api.statusDesktop).toHaveBeenCalledWith('session-desktop-1')
+    expect(api.resultDesktop).toHaveBeenCalledWith('session-desktop-1')
+    expect(api.cancelDesktop).toHaveBeenCalledWith('session-desktop-1')
+    expect(api.resumeDesktop).toHaveBeenCalledWith('session-desktop-1', 'continue in Desktop')
   })
 
   it('uses one awaited idempotent shutdown for EOF and explicit close', async () => {

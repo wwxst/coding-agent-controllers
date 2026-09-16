@@ -1,0 +1,20 @@
+{
+  "id": "workbuddy-control-desktop",
+  "name": "WorkBuddy Control Desktop Bridge",
+  "version": "0.1.0",
+  "description": "Bridge local workbuddy-control requests to WorkBuddy Desktop Session RPCs.",
+  "kind": "third-party",
+  "permissions": [
+    "session.create",
+    "session.get",
+    "session.load",
+    "session.sendMessage",
+    "session.cancel",
+    "conversations.requestEntries"
+  ],
+  "service": {
+    "entry": "./server/index.cjs",
+    "process": "fork",
+    "activationEvents": ["onStartup"]
+  }
+}
