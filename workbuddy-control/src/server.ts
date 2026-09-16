@@ -9,7 +9,7 @@ import {
   type DesktopMode,
   type DesktopPermissionMode,
   type DesktopRunOptions,
-  type DesktopSessionStatus,
+  type DesktopStatusResult,
 } from './desktop-control.js'
 import { DesktopPipeClient } from './desktop-transport.js'
 import { startWorkBuddy } from './process.js'
@@ -21,14 +21,7 @@ export interface WorkBuddyControlApi {
   cancel(jobId: string): Promise<{ jobId: string; stopped: boolean }>
   resume(jobId: string, prompt: string): Promise<{ jobId: string; sessionId?: string; delivered: boolean }>
   runDesktop(options: DesktopRunOptions): Promise<{ taskId: string; sessionId: string }>
-  statusDesktop(taskId: string): Promise<{
-    taskId: string
-    sessionId: string
-    status: DesktopSessionStatus
-    settled: boolean
-    isProcessing?: boolean
-    pendingInputKind?: string
-  }>
+  statusDesktop(taskId: string): Promise<DesktopStatusResult>
   resultDesktop(taskId: string): Promise<object>
   cancelDesktop(taskId: string): Promise<{ taskId: string; sessionId: string; cancelRequested: true }>
   resumeDesktop(taskId: string, prompt: string): Promise<{ taskId: string; sessionId: string; delivered: true }>

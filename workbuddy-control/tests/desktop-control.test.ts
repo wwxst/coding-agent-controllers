@@ -57,8 +57,22 @@ describe('DesktopControl', () => {
       status: 'working',
       isProcessing: true,
       pendingInputKind: undefined,
+      hasActiveToolCalls: true,
+      lastActivityAt: 1_000,
+      lastBackendActivityAt: 2_000,
+      eventHistory: [
+        {
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'tool-task-output',
+            title: 'TaskOutput',
+            status: 'in_progress',
+          },
+        },
+      ],
     }])
     const control = new DesktopControl(desktop)
+    const now = vi.spyOn(Date, 'now').mockReturnValue(2_000 + 5 * 60 * 1_000)
 
     await expect(control.status('session-3')).resolves.toEqual({
       taskId: 'session-3',
@@ -66,8 +80,75 @@ describe('DesktopControl', () => {
       status: 'working',
       settled: false,
       isProcessing: true,
+      hasActiveToolCalls: true,
+      lastActivityAt: 1_000,
+      lastBackendActivityAt: 2_000,
+      currentTool: 'TaskOutput',
+      currentToolCallId: 'tool-task-output',
+      waitingTaskOutput: true,
+      stalled: true,
+      stalledForMs: 5 * 60 * 1_000,
     })
     expect(desktop.invoke).toHaveBeenCalledWith('session:get', ['session-3'])
+    now.mockRestore()
+  })
+
+  it('does not report a processing Session as stalled while it is waiting for input', async () => {
+    const desktop = bridge([{
+      sessionId: 'session-input',
+      status: 'working',
+      isProcessing: true,
+      pendingInputKind: 'question',
+      hasActiveToolCalls: false,
+      lastActivityAt: 1_000,
+      lastBackendActivityAt: 2_000,
+    }])
+    const control = new DesktopControl(desktop)
+    const now = vi.spyOn(Date, 'now').mockReturnValue(2_000 + 10 * 60 * 1_000)
+
+    await expect(control.status('session-input')).resolves.toEqual({
+      taskId: 'session-input',
+      sessionId: 'session-input',
+      status: 'working',
+      settled: false,
+      isProcessing: true,
+      pendingInputKind: 'question',
+      hasActiveToolCalls: false,
+      lastActivityAt: 1_000,
+      lastBackendActivityAt: 2_000,
+      waitingTaskOutput: false,
+    })
+    now.mockRestore()
+  })
+
+  it('uses hasActiveToolCalls false to reject stale active-tool history', async () => {
+    const desktop = bridge([{
+      sessionId: 'session-stale-tool',
+      status: 'completed',
+      isProcessing: false,
+      hasActiveToolCalls: false,
+      eventHistory: [
+        {
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'old-task-output',
+            title: 'TaskOutput',
+            status: 'in_progress',
+          },
+        },
+      ],
+    }])
+    const control = new DesktopControl(desktop)
+
+    await expect(control.status('session-stale-tool')).resolves.toEqual({
+      taskId: 'session-stale-tool',
+      sessionId: 'session-stale-tool',
+      status: 'completed',
+      settled: true,
+      isProcessing: false,
+      hasActiveToolCalls: false,
+      waitingTaskOutput: false,
+    })
   })
 
   it('returns only the latest turn Assistant text from the real event history', async () => {
@@ -145,6 +226,41 @@ describe('DesktopControl', () => {
     ])
     expect(desktop.invokeDetached).toHaveBeenCalledWith('session:sendMessage', ['session-6', 'continue'])
     expect(desktop.invoke).not.toHaveBeenCalledWith('session:create', expect.anything())
+  })
+
+  it('rejects resume before loading or sending when the real Session is still processing', async () => {
+    const desktop = bridge([{
+      sessionId: 'session-processing',
+      status: 'working',
+      cwd: 'E:/safe',
+      isProcessing: true,
+    }])
+    const control = new DesktopControl(desktop)
+
+    await expect(control.resume('session-processing', 'continue')).rejects.toThrow(
+      'Session is still processing. Wait for completion or cancel before resume.',
+    )
+    expect(desktop.invoke.mock.calls).toEqual([['session:get', ['session-processing']]])
+    expect(desktop.invokeDetached).not.toHaveBeenCalled()
+    expect(desktop.invoke).not.toHaveBeenCalledWith('session:create', expect.anything())
+    expect(desktop.invoke).not.toHaveBeenCalledWith('session:cancel', expect.anything())
+  })
+
+  it('checks the loaded Session again and rejects resume if it became processing', async () => {
+    const desktop = bridge([
+      { sessionId: 'session-loaded-processing', status: 'completed', cwd: 'E:/safe', isProcessing: false },
+      { sessionId: 'session-loaded-processing', status: 'working', cwd: 'E:/safe', isProcessing: true },
+    ])
+    const control = new DesktopControl(desktop)
+
+    await expect(control.resume('session-loaded-processing', 'continue')).rejects.toThrow(
+      'Session is still processing. Wait for completion or cancel before resume.',
+    )
+    expect(desktop.invoke.mock.calls).toEqual([
+      ['session:get', ['session-loaded-processing']],
+      ['session:load', ['session-loaded-processing', { cwd: 'E:/safe' }]],
+    ])
+    expect(desktop.invokeDetached).not.toHaveBeenCalled()
   })
 
   it('cancels the real Desktop Session and leaves final status to status()', async () => {

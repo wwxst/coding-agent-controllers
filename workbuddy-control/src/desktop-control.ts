@@ -28,6 +28,11 @@ interface SessionEvent {
   update?: {
     sessionUpdate?: string
     content?: { type?: string; text?: string } | Array<{ type?: string; text?: string }>
+    toolCallId?: string
+    toolName?: string
+    title?: string
+    status?: string
+    _meta?: Record<string, unknown>
   }
 }
 
@@ -38,7 +43,27 @@ interface DesktopSession {
   status: DesktopSessionStatus
   isProcessing?: boolean
   pendingInputKind?: string
+  hasActiveToolCalls?: boolean
+  lastActivityAt?: number
+  lastBackendActivityAt?: number
   eventHistory?: SessionEvent[]
+}
+
+export interface DesktopStatusResult {
+  taskId: string
+  sessionId: string
+  status: DesktopSessionStatus
+  settled: boolean
+  isProcessing?: boolean
+  pendingInputKind?: string
+  hasActiveToolCalls?: boolean
+  lastActivityAt?: number
+  lastBackendActivityAt?: number
+  currentTool?: string
+  currentToolCallId?: string
+  waitingTaskOutput?: boolean
+  stalled?: true
+  stalledForMs?: number
 }
 
 interface ConversationRequestEntriesPage {
@@ -55,6 +80,9 @@ const terminalStatuses = new Set<DesktopSessionStatus>([
 ])
 const historyPageByteLength = 5 * 1024 * 1024
 const historyReadyTimeoutMs = 30_000
+const stalledThresholdMs = 5 * 60 * 1_000
+const activeToolStatuses = new Set(['pending', 'in_progress'])
+const taskOutputToolName = 'TaskOutput'
 
 export class DesktopControl {
   constructor(private readonly bridge: DesktopBridge) {}
@@ -70,15 +98,23 @@ export class DesktopControl {
     return { taskId: session.sessionId, sessionId: session.sessionId }
   }
 
-  async status(taskId: string): Promise<{
-    taskId: string
-    sessionId: string
-    status: DesktopSessionStatus
-    settled: boolean
-    isProcessing?: boolean
-    pendingInputKind?: string
-  }> {
+  async status(taskId: string): Promise<DesktopStatusResult> {
     const session = await this.getSession(taskId)
+    const currentTool = session.hasActiveToolCalls !== false && Array.isArray(session.eventHistory)
+      ? currentActiveTool(session.eventHistory)
+      : undefined
+    const latestActivityAt = latestValidTimestamp(session.lastActivityAt, session.lastBackendActivityAt)
+    const stalledForMs = session.isProcessing === true
+      && session.pendingInputKind === undefined
+      && latestActivityAt !== undefined
+      ? Date.now() - latestActivityAt
+      : undefined
+    const stalled = stalledForMs !== undefined && stalledForMs >= stalledThresholdMs
+    const waitingTaskOutput = currentTool?.name === taskOutputToolName
+      ? true
+      : currentTool !== undefined || session.hasActiveToolCalls === false
+        ? false
+        : undefined
     return {
       taskId,
       sessionId: session.sessionId,
@@ -86,6 +122,13 @@ export class DesktopControl {
       settled: terminalStatuses.has(session.status),
       ...(session.isProcessing === undefined ? {} : { isProcessing: session.isProcessing }),
       ...(session.pendingInputKind === undefined ? {} : { pendingInputKind: session.pendingInputKind }),
+      ...(session.hasActiveToolCalls === undefined ? {} : { hasActiveToolCalls: session.hasActiveToolCalls }),
+      ...(session.lastActivityAt === undefined ? {} : { lastActivityAt: session.lastActivityAt }),
+      ...(session.lastBackendActivityAt === undefined ? {} : { lastBackendActivityAt: session.lastBackendActivityAt }),
+      ...(currentTool?.name === undefined ? {} : { currentTool: currentTool.name }),
+      ...(currentTool === undefined ? {} : { currentToolCallId: currentTool.toolCallId }),
+      ...(waitingTaskOutput === undefined ? {} : { waitingTaskOutput }),
+      ...(stalled ? { stalled: true as const, stalledForMs } : {}),
     }
   }
 
@@ -110,7 +153,10 @@ export class DesktopControl {
     sessionId: string
     delivered: true
   }> {
-    const session = await this.ensureLoaded(await this.getSession(taskId))
+    const current = await this.getSession(taskId)
+    this.assertNotProcessing(current)
+    const session = await this.ensureLoaded(current)
+    this.assertNotProcessing(session)
     await this.bridge.invokeDetached('session:sendMessage', [session.sessionId, prompt])
     return { taskId, sessionId: session.sessionId, delivered: true }
   }
@@ -136,6 +182,12 @@ export class DesktopControl {
     return this.bridge.invoke<DesktopSession>('session:load', [session.sessionId, { cwd: session.cwd }])
   }
 
+  private assertNotProcessing(session: DesktopSession): void {
+    if (session.isProcessing === true) {
+      throw new Error('Session is still processing. Wait for completion or cancel before resume.')
+    }
+  }
+
   private async loadPersistedRequests(sessionId: string): Promise<ConversationRequestEntriesPage> {
     const deadline = Date.now() + historyReadyTimeoutMs
     while (true) {
@@ -148,6 +200,35 @@ export class DesktopControl {
       await new Promise(resolve => setTimeout(resolve, 20))
     }
   }
+}
+
+function currentActiveTool(events: SessionEvent[]): { toolCallId: string; name?: string } | undefined {
+  const tools = new Map<string, { toolCallId: string; name?: string; status?: string; index: number }>()
+  events.forEach((event, index) => {
+    const update = event.update
+    if (update?.sessionUpdate !== 'tool_call' && update?.sessionUpdate !== 'tool_call_update') return
+    if (typeof update.toolCallId !== 'string') return
+    const previous = tools.get(update.toolCallId)
+    const metaToolName = update._meta?.['codebuddy.ai/toolName']
+    const name = typeof metaToolName === 'string'
+      ? metaToolName
+      : update.toolName ?? update.title ?? previous?.name
+    tools.set(update.toolCallId, {
+      toolCallId: update.toolCallId,
+      ...(name === undefined ? {} : { name }),
+      status: update.status ?? previous?.status,
+      index,
+    })
+  })
+  return [...tools.values()]
+    .filter(tool => tool.status !== undefined && activeToolStatuses.has(tool.status))
+    .sort((left, right) => right.index - left.index)[0]
+}
+
+function latestValidTimestamp(...values: Array<number | undefined>): number | undefined {
+  const valid = values.filter((value): value is number =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0)
+  return valid.length === 0 ? undefined : Math.max(...valid)
 }
 
 function latestAssistantText(events: SessionEvent[]): string | undefined {

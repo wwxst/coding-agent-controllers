@@ -26,6 +26,8 @@ WorkBuddy Agent（WorkBuddy 智能体）
 
 POC 已实现 `workbuddy_run_desktop`、`workbuddy_status_desktop`、`workbuddy_result_desktop`、`workbuddy_resume_desktop` 和 `workbuddy_cancel_desktop`。真实 Session 创建、左侧会话列表出现、文件修改、状态、同会话续接和取消已验证；完整 Prompt、Assistant 消息、Tool Call（工具调用）和 Tool Result（工具结果）的 GUI 展示仍未完成完整自动化 E2E 验收，因此不能把 Desktop Mode 作为稳定功能使用。
 
+`workbuddy_resume_desktop` 在发送前读取真实 Session；Session 仍在处理时会拒绝续接，不排队、不取消，也不创建新 Session。`workbuddy_status_desktop` 直接返回 WorkBuddy 5.5.2 可取得的处理、输入等待、活动工具和活动时间字段，并在持续处理且五分钟没有 Assistant / Tool 活动时只报告 `stalled`。活动工具是 `TaskOutput` 时会返回 `waitingTaskOutput: true`；插件不会猜测 PID、解析命令或自动终止进程。
+
 ## MCP 工具
 
 - `workbuddy_run`：提交 `cwd`（工作目录）和 `prompt`（任务提示），返回 `jobId`（WorkBuddy 任务 ID）。

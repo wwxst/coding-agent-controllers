@@ -12,6 +12,22 @@ export interface DesktopRunOptions {
     mode?: DesktopMode;
     permissionMode?: DesktopPermissionMode;
 }
+export interface DesktopStatusResult {
+    taskId: string;
+    sessionId: string;
+    status: DesktopSessionStatus;
+    settled: boolean;
+    isProcessing?: boolean;
+    pendingInputKind?: string;
+    hasActiveToolCalls?: boolean;
+    lastActivityAt?: number;
+    lastBackendActivityAt?: number;
+    currentTool?: string;
+    currentToolCallId?: string;
+    waitingTaskOutput?: boolean;
+    stalled?: true;
+    stalledForMs?: number;
+}
 export declare class DesktopControl {
     private readonly bridge;
     constructor(bridge: DesktopBridge);
@@ -19,14 +35,7 @@ export declare class DesktopControl {
         taskId: string;
         sessionId: string;
     }>;
-    status(taskId: string): Promise<{
-        taskId: string;
-        sessionId: string;
-        status: DesktopSessionStatus;
-        settled: boolean;
-        isProcessing?: boolean;
-        pendingInputKind?: string;
-    }>;
+    status(taskId: string): Promise<DesktopStatusResult>;
     result(taskId: string): Promise<object>;
     resume(taskId: string, prompt: string): Promise<{
         taskId: string;
@@ -40,5 +49,6 @@ export declare class DesktopControl {
     }>;
     private getSession;
     private ensureLoaded;
+    private assertNotProcessing;
     private loadPersistedRequests;
 }

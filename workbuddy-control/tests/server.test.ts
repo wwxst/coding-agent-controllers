@@ -46,6 +46,11 @@ function control(): WorkBuddyControlApi {
       sessionId: 'session-desktop-1',
       status: 'working' as const,
       settled: false,
+      isProcessing: true,
+      hasActiveToolCalls: true,
+      currentTool: 'TaskOutput',
+      currentToolCallId: 'tool-1',
+      waitingTaskOutput: true,
     })),
     resultDesktop: vi.fn(async () => ({
       ready: false,
@@ -98,7 +103,10 @@ describe('workbuddy-control MCP server', () => {
         permissionMode: 'acceptEdits',
       },
     })
-    await client.callTool({ name: 'workbuddy_status_desktop', arguments: { taskId: 'session-desktop-1' } })
+    const desktopStatus = await client.callTool({
+      name: 'workbuddy_status_desktop',
+      arguments: { taskId: 'session-desktop-1' },
+    })
     await client.callTool({ name: 'workbuddy_result_desktop', arguments: { taskId: 'session-desktop-1' } })
     await client.callTool({ name: 'workbuddy_cancel_desktop', arguments: { taskId: 'session-desktop-1' } })
     await client.callTool({
@@ -119,6 +127,13 @@ describe('workbuddy-control MCP server', () => {
       permissionMode: 'acceptEdits',
     })
     expect(api.statusDesktop).toHaveBeenCalledWith('session-desktop-1')
+    expect(desktopStatus.structuredContent).toMatchObject({
+      isProcessing: true,
+      hasActiveToolCalls: true,
+      currentTool: 'TaskOutput',
+      currentToolCallId: 'tool-1',
+      waitingTaskOutput: true,
+    })
     expect(api.resultDesktop).toHaveBeenCalledWith('session-desktop-1')
     expect(api.cancelDesktop).toHaveBeenCalledWith('session-desktop-1')
     expect(api.resumeDesktop).toHaveBeenCalledWith('session-desktop-1', 'continue in Desktop')

@@ -3,6 +3,9 @@ const terminalStatuses = new Set([
 ]);
 const historyPageByteLength = 5 * 1024 * 1024;
 const historyReadyTimeoutMs = 30_000;
+const stalledThresholdMs = 5 * 60 * 1_000;
+const activeToolStatuses = new Set(['pending', 'in_progress']);
+const taskOutputToolName = 'TaskOutput';
 export class DesktopControl {
     bridge;
     constructor(bridge) {
@@ -20,6 +23,21 @@ export class DesktopControl {
     }
     async status(taskId) {
         const session = await this.getSession(taskId);
+        const currentTool = session.hasActiveToolCalls !== false && Array.isArray(session.eventHistory)
+            ? currentActiveTool(session.eventHistory)
+            : undefined;
+        const latestActivityAt = latestValidTimestamp(session.lastActivityAt, session.lastBackendActivityAt);
+        const stalledForMs = session.isProcessing === true
+            && session.pendingInputKind === undefined
+            && latestActivityAt !== undefined
+            ? Date.now() - latestActivityAt
+            : undefined;
+        const stalled = stalledForMs !== undefined && stalledForMs >= stalledThresholdMs;
+        const waitingTaskOutput = currentTool?.name === taskOutputToolName
+            ? true
+            : currentTool !== undefined || session.hasActiveToolCalls === false
+                ? false
+                : undefined;
         return {
             taskId,
             sessionId: session.sessionId,
@@ -27,6 +45,13 @@ export class DesktopControl {
             settled: terminalStatuses.has(session.status),
             ...(session.isProcessing === undefined ? {} : { isProcessing: session.isProcessing }),
             ...(session.pendingInputKind === undefined ? {} : { pendingInputKind: session.pendingInputKind }),
+            ...(session.hasActiveToolCalls === undefined ? {} : { hasActiveToolCalls: session.hasActiveToolCalls }),
+            ...(session.lastActivityAt === undefined ? {} : { lastActivityAt: session.lastActivityAt }),
+            ...(session.lastBackendActivityAt === undefined ? {} : { lastBackendActivityAt: session.lastBackendActivityAt }),
+            ...(currentTool?.name === undefined ? {} : { currentTool: currentTool.name }),
+            ...(currentTool === undefined ? {} : { currentToolCallId: currentTool.toolCallId }),
+            ...(waitingTaskOutput === undefined ? {} : { waitingTaskOutput }),
+            ...(stalled ? { stalled: true, stalledForMs } : {}),
         };
     }
     async result(taskId) {
@@ -46,7 +71,10 @@ export class DesktopControl {
         return { ready: true, ...base, ...(result === undefined ? {} : { result }) };
     }
     async resume(taskId, prompt) {
-        const session = await this.ensureLoaded(await this.getSession(taskId));
+        const current = await this.getSession(taskId);
+        this.assertNotProcessing(current);
+        const session = await this.ensureLoaded(current);
+        this.assertNotProcessing(session);
         await this.bridge.invokeDetached('session:sendMessage', [session.sessionId, prompt]);
         return { taskId, sessionId: session.sessionId, delivered: true };
     }
@@ -67,6 +95,11 @@ export class DesktopControl {
             throw new Error(`WorkBuddy Desktop Session has no cwd: ${session.sessionId}`);
         return this.bridge.invoke('session:load', [session.sessionId, { cwd: session.cwd }]);
     }
+    assertNotProcessing(session) {
+        if (session.isProcessing === true) {
+            throw new Error('Session is still processing. Wait for completion or cancel before resume.');
+        }
+    }
     async loadPersistedRequests(sessionId) {
         const deadline = Date.now() + historyReadyTimeoutMs;
         while (true) {
@@ -78,6 +111,34 @@ export class DesktopControl {
             await new Promise(resolve => setTimeout(resolve, 20));
         }
     }
+}
+function currentActiveTool(events) {
+    const tools = new Map();
+    events.forEach((event, index) => {
+        const update = event.update;
+        if (update?.sessionUpdate !== 'tool_call' && update?.sessionUpdate !== 'tool_call_update')
+            return;
+        if (typeof update.toolCallId !== 'string')
+            return;
+        const previous = tools.get(update.toolCallId);
+        const metaToolName = update._meta?.['codebuddy.ai/toolName'];
+        const name = typeof metaToolName === 'string'
+            ? metaToolName
+            : update.toolName ?? update.title ?? previous?.name;
+        tools.set(update.toolCallId, {
+            toolCallId: update.toolCallId,
+            ...(name === undefined ? {} : { name }),
+            status: update.status ?? previous?.status,
+            index,
+        });
+    });
+    return [...tools.values()]
+        .filter(tool => tool.status !== undefined && activeToolStatuses.has(tool.status))
+        .sort((left, right) => right.index - left.index)[0];
+}
+function latestValidTimestamp(...values) {
+    const valid = values.filter((value) => typeof value === 'number' && Number.isFinite(value) && value > 0);
+    return valid.length === 0 ? undefined : Math.max(...valid);
 }
 function latestAssistantText(events) {
     const lastUserIndex = events.findLastIndex(event => event.update?.sessionUpdate === 'user_message_chunk');
