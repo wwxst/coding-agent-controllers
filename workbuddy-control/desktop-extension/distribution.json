@@ -1,0 +1,22 @@
+{
+  "extensionId": "workbuddy-control-desktop",
+  "version": "0.1.0",
+  "kind": "third-party",
+  "grantedPermissions": [
+    "session.create",
+    "session.get",
+    "session.load",
+    "session.sendMessage",
+    "session.cancel",
+    "conversations.requestEntries"
+  ],
+  "processPolicy": {
+    "server": "fork"
+  },
+  "rollout": {
+    "strategy": "full",
+    "percentage": 100
+  },
+  "status": "active",
+  "resident": true
+}

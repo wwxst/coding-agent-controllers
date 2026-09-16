@@ -2,7 +2,9 @@
 param(
     [string]$CodexHome,
     [string]$CodeBuddyPath,
-    [string]$WorkBuddyConfigDir
+    [string]$WorkBuddyConfigDir,
+    [string]$DesktopExtensionRoot,
+    [switch]$EnableDesktopMode
 )
 
 $ErrorActionPreference = 'Stop'
@@ -13,5 +15,7 @@ $parameters = @{ PluginRoot = $pluginRoot }
 if ($PSBoundParameters.ContainsKey('CodexHome')) { $parameters.CodexHome = $CodexHome }
 if ($PSBoundParameters.ContainsKey('CodeBuddyPath')) { $parameters.CodeBuddyPath = $CodeBuddyPath }
 if ($PSBoundParameters.ContainsKey('WorkBuddyConfigDir')) { $parameters.WorkBuddyConfigDir = $WorkBuddyConfigDir }
+if ($PSBoundParameters.ContainsKey('DesktopExtensionRoot')) { $parameters.DesktopExtensionRoot = $DesktopExtensionRoot }
+if ($EnableDesktopMode) { $parameters.EnableDesktopMode = $true }
 
 Invoke-WorkBuddySetup @parameters

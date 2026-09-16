@@ -4,6 +4,14 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 import { WorkBuddyControl, type WorkBuddyState } from './control.js'
+import {
+  DesktopControl,
+  type DesktopMode,
+  type DesktopPermissionMode,
+  type DesktopRunOptions,
+  type DesktopSessionStatus,
+} from './desktop-control.js'
+import { DesktopPipeClient } from './desktop-transport.js'
 import { startWorkBuddy } from './process.js'
 
 export interface WorkBuddyControlApi {
@@ -12,6 +20,18 @@ export interface WorkBuddyControlApi {
   result(jobId: string): Promise<object>
   cancel(jobId: string): Promise<{ jobId: string; stopped: boolean }>
   resume(jobId: string, prompt: string): Promise<{ jobId: string; sessionId?: string; delivered: boolean }>
+  runDesktop(options: DesktopRunOptions): Promise<{ taskId: string; sessionId: string }>
+  statusDesktop(taskId: string): Promise<{
+    taskId: string
+    sessionId: string
+    status: DesktopSessionStatus
+    settled: boolean
+    isProcessing?: boolean
+    pendingInputKind?: string
+  }>
+  resultDesktop(taskId: string): Promise<object>
+  cancelDesktop(taskId: string): Promise<{ taskId: string; sessionId: string; cancelRequested: true }>
+  resumeDesktop(taskId: string, prompt: string): Promise<{ taskId: string; sessionId: string; delivered: true }>
   close(): Promise<void>
 }
 
@@ -70,6 +90,44 @@ export function createWorkBuddyMcpServer(control: WorkBuddyControlApi, input?: R
     annotations: actionAnnotations,
   }, async ({ jobId, prompt }) => toolResult(await control.resume(jobId, prompt)))
 
+  server.registerTool('workbuddy_run_desktop', {
+    description: 'Create a real WorkBuddy Desktop Session and send its first prompt through the Desktop Extension.',
+    inputSchema: {
+      cwd: z.string().min(1),
+      prompt: z.string().min(1),
+      model: z.string().min(1).optional(),
+      mode: z.enum(['craft', 'ask', 'plan', 'expert'] satisfies DesktopMode[]).optional(),
+      permissionMode: z.enum([
+        'default', 'acceptEdits', 'bypassPermissions', 'fullAccess', 'plan',
+      ] satisfies DesktopPermissionMode[]).optional(),
+    },
+    annotations: actionAnnotations,
+  }, async options => toolResult(await control.runDesktop(options)))
+
+  server.registerTool('workbuddy_status_desktop', {
+    description: 'Read status directly from the real WorkBuddy Desktop Session.',
+    inputSchema: { taskId: z.string().min(1) },
+    annotations: readOnlyAnnotations,
+  }, async ({ taskId }) => toolResult(await control.statusDesktop(taskId)))
+
+  server.registerTool('workbuddy_result_desktop', {
+    description: 'Read only the latest final Assistant text from the real WorkBuddy Desktop Session.',
+    inputSchema: { taskId: z.string().min(1) },
+    annotations: readOnlyAnnotations,
+  }, async ({ taskId }) => toolResult(await control.resultDesktop(taskId)))
+
+  server.registerTool('workbuddy_cancel_desktop', {
+    description: 'Request cancellation of the active turn in the real WorkBuddy Desktop Session.',
+    inputSchema: { taskId: z.string().min(1) },
+    annotations: actionAnnotations,
+  }, async ({ taskId }) => toolResult(await control.cancelDesktop(taskId)))
+
+  server.registerTool('workbuddy_resume_desktop', {
+    description: 'Send a follow-up prompt to the same real WorkBuddy Desktop Session.',
+    inputSchema: { taskId: z.string().min(1), prompt: z.string().min(1) },
+    annotations: actionAnnotations,
+  }, async ({ taskId, prompt }) => toolResult(await control.resumeDesktop(taskId, prompt)))
+
   const closeTransport = server.close.bind(server)
   let shutdown: Promise<void> | undefined
   const close = (): Promise<void> => {
@@ -88,12 +146,18 @@ export function createWorkBuddyMcpServer(control: WorkBuddyControlApi, input?: R
 async function main(): Promise<void> {
   const service = await startWorkBuddy()
   const control = new WorkBuddyControl(service.request)
+  const desktopControl = new DesktopControl(new DesktopPipeClient())
   const api: WorkBuddyControlApi = {
     run: control.run.bind(control),
     status: control.status.bind(control),
     result: control.result.bind(control),
     cancel: control.cancel.bind(control),
     resume: control.resume.bind(control),
+    runDesktop: desktopControl.run.bind(desktopControl),
+    statusDesktop: desktopControl.status.bind(desktopControl),
+    resultDesktop: desktopControl.result.bind(desktopControl),
+    cancelDesktop: desktopControl.cancel.bind(desktopControl),
+    resumeDesktop: desktopControl.resume.bind(desktopControl),
     close: service.close,
   }
   const server = createWorkBuddyMcpServer(api, process.stdin)

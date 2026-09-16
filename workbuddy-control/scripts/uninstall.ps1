@@ -1,5 +1,8 @@
 [CmdletBinding()]
-param([string]$CodexHome)
+param(
+    [string]$CodexHome,
+    [string]$DesktopExtensionRoot
+)
 
 $ErrorActionPreference = 'Stop'
 Import-Module (Join-Path $PSScriptRoot 'WorkBuddyPortable.psm1') -Force
@@ -12,5 +15,12 @@ Remove-WorkBuddyMcpConfig -ConfigPath $configPath
 
 Remove-WorkBuddyLauncher -CodexHome $resolvedCodexHome
 
+$extensionParameters = @{}
+if ($PSBoundParameters.ContainsKey('DesktopExtensionRoot')) {
+    $extensionParameters.DesktopExtensionRoot = $DesktopExtensionRoot
+}
+Remove-WorkBuddyDesktopExtension @extensionParameters
+
 Write-Output "Removed workbuddy MCP configuration from $configPath"
+Write-Output 'Removed the owned WorkBuddy Desktop Extension when present.'
 Write-Output 'Repository source and WorkBuddy were not modified.'

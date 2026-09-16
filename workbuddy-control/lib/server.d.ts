@@ -1,6 +1,7 @@
 import type { Readable } from 'node:stream';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { type WorkBuddyState } from './control.js';
+import { type DesktopRunOptions, type DesktopSessionStatus } from './desktop-control.js';
 export interface WorkBuddyControlApi {
     run(cwd: string, prompt: string): Promise<{
         jobId: string;
@@ -21,6 +22,29 @@ export interface WorkBuddyControlApi {
         jobId: string;
         sessionId?: string;
         delivered: boolean;
+    }>;
+    runDesktop(options: DesktopRunOptions): Promise<{
+        taskId: string;
+        sessionId: string;
+    }>;
+    statusDesktop(taskId: string): Promise<{
+        taskId: string;
+        sessionId: string;
+        status: DesktopSessionStatus;
+        settled: boolean;
+        isProcessing?: boolean;
+        pendingInputKind?: string;
+    }>;
+    resultDesktop(taskId: string): Promise<object>;
+    cancelDesktop(taskId: string): Promise<{
+        taskId: string;
+        sessionId: string;
+        cancelRequested: true;
+    }>;
+    resumeDesktop(taskId: string, prompt: string): Promise<{
+        taskId: string;
+        sessionId: string;
+        delivered: true;
     }>;
     close(): Promise<void>;
 }
