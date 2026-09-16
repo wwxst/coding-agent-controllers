@@ -288,7 +288,6 @@ public static class WorkBuddyCodeBuddyLauncher
             if (String.IsNullOrWhiteSpace(productConfig) || !File.Exists(productConfig))
                 throw new InvalidOperationException("ACC_PRODUCT_CONFIG_PATH is missing or invalid.");
 
-            Environment.SetEnvironmentVariable("ACC_PRODUCT_CONFIG_V3", File.ReadAllText(productConfig));
             var arguments = new List<string> { Quote(script) };
             foreach (var argument in args) arguments.Add(Quote(argument));
             var startInfo = new ProcessStartInfo

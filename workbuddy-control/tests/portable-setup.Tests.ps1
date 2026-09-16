@@ -54,7 +54,8 @@ args = ["--keep"]
         $second | Should Match '\[mcp_servers\.other\]'
         $second | Should Match 'command = "other-command"'
         $second | Should Match '\[mcp_servers\.workbuddy\]'
-        $second | Should Match ([regex]::Escape($root.Replace('\', '\\')))
+        $expectedRoot = [IO.Path]::GetFullPath($root)
+        $second | Should Match ([regex]::Escape($expectedRoot.Replace('\', '\\')))
     }
 
     It 'removes only the workbuddy MCP configuration' {
@@ -219,8 +220,12 @@ Describe 'WorkBuddy portable setup end to end' {
         $codeBuddy = New-FakeWorkBuddy $workBuddyRoot
         $workBuddyConfig = New-TestDirectory 'workbuddy user config'
         New-Item -ItemType Directory -Path (Join-Path $workBuddyConfig 'cache') -Force | Out-Null
-        Set-Content -LiteralPath (Join-Path $workBuddyConfig 'cache\acc-product-config-v3.json') `
-            -Value '{"environment":"test"}' -Encoding utf8
+        $largeProductConfig = '{"payload":"' + ('x' * 400000) + '"}'
+        [IO.File]::WriteAllText(
+            (Join-Path $workBuddyConfig 'cache\acc-product-config-v3.json'),
+            $largeProductConfig,
+            [Text.UTF8Encoding]::new($false)
+        )
 
         $codexHome = New-TestDirectory 'codex home'
         @"

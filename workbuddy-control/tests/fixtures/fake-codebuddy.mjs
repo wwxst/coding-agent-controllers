@@ -1,9 +1,22 @@
 import { spawn } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 
 if (process.argv.includes('--version')) {
   process.stdout.write('2.137.1\n')
   process.exit(0)
+}
+
+if (process.env.WORKBUDDY_CODEBUDDY_SCRIPT !== undefined) {
+  const productConfigPath = process.env.ACC_PRODUCT_CONFIG_PATH
+  if (productConfigPath === undefined || readFileSync(productConfigPath, 'utf8').length < 400_000) {
+    process.stderr.write('ACC_PRODUCT_CONFIG_PATH did not provide the large product config.\n')
+    process.exit(1)
+  }
+  if (process.env.ACC_PRODUCT_CONFIG_V3 !== undefined) {
+    process.stderr.write('ACC_PRODUCT_CONFIG_V3 must not contain the product config.\n')
+    process.exit(1)
+  }
 }
 
 const child = process.env.FAKE_RUNNING_CHILD === '1'
